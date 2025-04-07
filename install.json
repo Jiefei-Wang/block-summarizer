@@ -1,8 +1,0 @@
-{
-    "name": "History Summarizer",
-    "description": "Summarizes chat history into blocks using an external API to save tokens. Replaces {{chat_history}} with summarized/truncated history.",
-    "author": "Your Name",
-    "version": "1.0.0",
-    "required_api_version": "^1.0.0",
-    "tags": ["history", "summary", "api", "context"]
-  }
