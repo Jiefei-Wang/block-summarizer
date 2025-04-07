@@ -1,0 +1,59 @@
+<div class="histSummSetContainer">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>History Summarizer Settings</b>
+            <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <label for="histSumm_enabled">Enable Summarization:</label>
+            <input type="checkbox" id="histSumm_enabled" name="enabled" class="histSumm_setting">
+
+            <label for="histSumm_apiUrl">Summarization API URL (POST):</label>
+            <input type="text" id="histSumm_apiUrl" name="apiUrl" class="histSumm_setting text_pole" placeholder="http://localhost:5001/summarize">
+
+            <label for="histSumm_blockSize">Block Size (characters):</label>
+            <input type="number" id="histSumm_blockSize" name="blockSize" class="histSumm_setting" min="100" step="50">
+
+            <label for="histSumm_summarySize">Target Summary Size (chars, info only):</label>
+            <input type="number" id="histSumm_summarySize" name="summarySize" class="histSumm_setting" min="10" step="10">
+
+            <label for="histSumm_historySize">Target Final History Tokens (approx):</label>
+            <input type="number" id="histSumm_historySize" name="historySize" class="histSumm_setting" min="100" step="64">
+            <small>Total tokens for summary prompt + truncated recent history.</small>
+
+            <label for="histSumm_promptTemplate">History Insertion Template:</label>
+            <textarea id="histSumm_promptTemplate" name="promptTemplate" class="histSumm_setting text_pole" rows="4" placeholder="Use {{summary_content}} where the combined summary should go."></textarea>
+            <small>This template will be inserted as a system message after the first original system prompt.</small>
+
+            <button id="histSumm_clearCache" class="menu_button">Clear Summary Cache</button>
+            <span id="histSumm_cache_status" style="margin-left: 10px;"></span>
+        </div>
+    </div>
+
+    <div class="inline-drawer">
+         <div class="inline-drawer-toggle inline-drawer-header">
+             <b>Summary Preview & Edit</b>
+             <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
+         </div>
+         <div class="inline-drawer-content">
+             <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                 <button id="histSumm_prevBlock" class="menu_button fa-solid fa-chevron-left" title="Previous Block"></button>
+                 <span id="histSumm_blockIndicator" style="margin: 0 10px;">Block 0 / 0</span>
+                 <button id="histSumm_nextBlock" class="menu_button fa-solid fa-chevron-right" title="Next Block"></button>
+                 <button id="histSumm_refreshPreview" class="menu_button" style="margin-left: auto;">Refresh Preview</button>
+             </div>
+             <div style="margin-bottom: 5px;">
+                <label>Block Content (Read Only):</label>
+                <textarea id="histSumm_blockContentPreview" rows="8" class="text_pole" readonly style="background-color: #333;"></textarea>
+             </div>
+             <div>
+                <label>Generated/Cached Summary (Editable):</label>
+                <textarea id="histSumm_summaryPreview" rows="5" class="text_pole"></textarea>
+                <button id="histSumm_saveSummaryEdit" class="menu_button" style="margin-top: 5px;">Save Edited Summary</button>
+                <span id="histSumm_edit_status" style="margin-left: 10px;"></span>
+             </div>
+              <div id="histSumm_preview_error" class="histSumm_error" style="margin-top: 5px;"></div>
+         </div>
+    </div>
+
+</div>

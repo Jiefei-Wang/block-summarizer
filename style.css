@@ -1,0 +1,114 @@
+/* Container for the extension settings */
+.histSummSetContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 10px; /* Spacing between drawers */
+    padding: 5px; /* Padding around the whole extension area */
+    color: var(--text-color); /* Use SillyTavern theme variables */
+}
+
+/* Add some margin/padding to labels and inputs */
+.histSummSetContainer label {
+    display: block;
+    margin-top: 8px;
+    margin-bottom: 2px;
+    font-weight: bold;
+}
+
+.histSummSetContainer input[type="text"],
+.histSummSetContainer input[type="number"],
+.histSummSetContainer textarea {
+    width: 95%; /* Adjust as needed */
+    margin-bottom: 5px;
+    /* Ensure theme compatibility (copy styles from ST if needed) */
+    /* background-color: var(--input-bg-color); */
+    /* color: var(--text-color); */
+    /* border: 1px solid var(--border-color); */
+}
+
+.histSummSetContainer input[type="checkbox"] {
+     margin-left: 5px;
+     vertical-align: middle;
+}
+
+
+.histSummSetContainer button {
+    /* Style buttons like ST menu buttons */
+    /* padding: 5px 10px; */
+    /* background-color: var(--secondary-bg-color); */
+    /* border: 1px solid var(--border-color); */
+    /* cursor: pointer; */
+    margin-right: 5px; /* Spacing between adjacent buttons */
+}
+/* Use ST's menu_button class if available and suitable */
+/* .histSummSetContainer .menu_button { ... } */
+
+
+.histSummSetContainer small {
+    display: block;
+    font-size: 0.8em;
+    color: var(--text-color-secondary); /* Lighter text color */
+    margin-top: -3px;
+    margin-bottom: 5px;
+}
+
+/* Style for error messages */
+.histSumm_error {
+    color: var(--warning-color, red); /* Use theme warning color or fallback */
+    font-weight: bold;
+}
+
+/* Style for status messages */
+#histSumm_cache_status,
+#histSumm_edit_status {
+    font-size: 0.9em;
+    color: var(--text-color-secondary);
+}
+
+
+/* Drawer styles (basic example, adapt from ST's common.css if possible) */
+.inline-drawer {
+    border: 1px solid var(--border-color, #444);
+    border-radius: 5px;
+    background-color: var(--secondary-bg-color, #2a2a2a);
+    margin-bottom: 10px;
+}
+
+.inline-drawer-header {
+    padding: 8px 10px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: var(--tertiary-bg-color, #333);
+    border-bottom: 1px solid var(--border-color, #444);
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+}
+
+.inline-drawer-icon {
+    transition: transform 0.2s ease-in-out;
+}
+
+.inline-drawer-icon.down {
+    transform: rotate(0deg);
+}
+
+.inline-drawer-icon.up {
+    transform: rotate(-90deg); /* Or 180deg depending on icon */
+}
+
+.inline-drawer-content {
+    padding: 10px;
+    /* display: none; */ /* Initial state controlled by JS or default CSS */
+    border-top: none;
+}
+
+/* Ensure FontAwesome icons render if used */
+.fa-solid {
+    /* display: inline-block; */ /* Handled by FontAwesome CSS */
+    /* font-style: normal; */
+    /* font-variant: normal; */
+    /* text-rendering: auto; */
+    /* -webkit-font-smoothing: antialiased; */
+}
