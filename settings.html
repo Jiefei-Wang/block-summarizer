@@ -1,59 +1,94 @@
-<div class="histSummSetContainer">
+<div id="histSumm_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>History Summarizer Settings</b>
-            <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
+            <b>Block Summarizer Settings</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <label for="histSumm_enabled">Enable Summarization:</label>
-            <input type="checkbox" id="histSumm_enabled" name="enabled" class="histSumm_setting">
+            <label for="histSumm_enabled" class="flex-container alignitemscenter">
+                <input type="checkbox" id="histSumm_enabled" name="enabled">
+                <span style="margin-left: 5px;">Enable Block Summarization</span>
+            </label>
 
             <label for="histSumm_apiUrl">Summarization API URL (POST):</label>
-            <input type="text" id="histSumm_apiUrl" name="apiUrl" class="histSumm_setting text_pole" placeholder="http://localhost:5001/summarize">
+            <input type="text" id="histSumm_apiUrl" name="apiUrl" class="text_pole" placeholder="http://localhost:5001/summarize_block">
 
-            <label for="histSumm_blockSize">Block Size (characters):</label>
-            <input type="number" id="histSumm_blockSize" name="blockSize" class="histSumm_setting" min="100" step="50">
+            <label for="histSumm_blockSize">Block Size (characters): <span id="histSumm_blockSize_value"></span></label>
+            <input type="range" id="histSumm_blockSize" name="blockSize" min="200" max="4000" step="100">
 
-            <label for="histSumm_summarySize">Target Summary Size (chars, info only):</label>
-            <input type="number" id="histSumm_summarySize" name="summarySize" class="histSumm_setting" min="10" step="10">
+            <label for="histSumm_summarySize">Target Summary Size (chars, hint for API): <span id="histSumm_summarySize_value"></span></label>
+            <input type="range" id="histSumm_summarySize" name="summarySize" min="50" max="500" step="10">
 
-            <label for="histSumm_historySize">Target Final History Tokens (approx):</label>
-            <input type="number" id="histSumm_historySize" name="historySize" class="histSumm_setting" min="100" step="64">
-            <small>Total tokens for summary prompt + truncated recent history.</small>
+            <label for="histSumm_triggerThreshold">Update Summary After N Messages: <span id="histSumm_triggerThreshold_value"></span></label>
+            <input type="range" id="histSumm_triggerThreshold" name="triggerThreshold" min="1" max="50" step="1">
+            <small>Summarization runs when this many new messages appear since the last summary block.</small>
 
-            <label for="histSumm_promptTemplate">History Insertion Template:</label>
-            <textarea id="histSumm_promptTemplate" name="promptTemplate" class="histSumm_setting text_pole" rows="4" placeholder="Use {{summary_content}} where the combined summary should go."></textarea>
-            <small>This template will be inserted as a system message after the first original system prompt.</small>
+            <button id="histSumm_forceUpdate" class="menu_button">Summarize Now</button>
+            <button id="histSumm_clearCache" class="menu_button">Clear Cache</button>
+            <span id="histSumm_cache_status"></span>
+            <hr>
+            <h4 style="text-align: center;">Injection Settings</h4>
 
-            <button id="histSumm_clearCache" class="menu_button">Clear Summary Cache</button>
-            <span id="histSumm_cache_status" style="margin-left: 10px;"></span>
+            <label for="histSumm_promptTemplate">Injection Template:</label>
+            <textarea id="histSumm_promptTemplate" name="promptTemplate" class="text_pole textarea_compact" rows="4" placeholder="Use {{summary_content}} where the combined summaries should go."></textarea>
+            <small>This template will be used to format the combined block summaries.</small>
+
+             <label for="histSumm_position">Injection Position:</label>
+             <div class="radio_group">
+                 <label>
+                     <input type="radio" name="position" value="-1" /> <!-- extension_prompt_types.NONE -->
+                     <span data-i18n="None (not injected)">None (not injected)</span>
+                     <i class="fa-solid fa-info-circle" title="The summary will not be injected. Useful if handled by other means (e.g., custom macros)." data-i18n="[title]ext_histSumm_injection_position_none"></i>
+                 </label>
+                 <label>
+                     <input type="radio" name="position" value="2" /> <!-- extension_prompt_types.BEFORE_SYSTEM -->
+                     <span data-i18n="Before Main Prompt / Story String">Before Main Prompt / Story String</span>
+                 </label>
+                 <label>
+                     <input type="radio" name="position" value="0" /> <!-- extension_prompt_types.AFTER_SYSTEM -->
+                     <span data-i18n="After Main Prompt / Story String">After Main Prompt / Story String</span>
+                 </label>
+                 <label class="flex-container alignItemsCenter" title="How many messages before the current end of the chat." data-i18n="[title]How many messages before the current end of the chat.">
+                     <input type="radio" name="position" value="1" /> <!-- extension_prompt_types.IN_CHAT -->
+                     <span data-i18n="In-chat @ Depth">In-chat @ Depth</span> <input id="histSumm_depth" name="depth" class="text_pole widthUnset" type="number" min="0" max="999" />
+                     <span data-i18n="as">as</span>
+                     <select id="histSumm_role" name="role" class="text_pole widthNatural">
+                         <option value="0" data-i18n="System">System</option> <!-- extension_prompt_roles.SYSTEM -->
+                         <option value="1" data-i18n="User">User</option> <!-- extension_prompt_roles.USER -->
+                         <option value="2" data-i18n="Assistant">Assistant</option> <!-- extension_prompt_roles.ASSISTANT -->
+                     </select>
+                 </label>
+             </div>
+             <label class="checkbox_label" for="histSumm_scan" data-i18n="[title]ext_histSumm_include_wi_scan_desc" title="Include the latest summary in the WI scan.">
+                <input id="histSumm_scan" name="scan" type="checkbox" />
+                <span data-i18n="ext_histSumm_include_wi_scan">Include in World Info Scanning</span>
+            </label>
         </div>
     </div>
 
     <div class="inline-drawer">
          <div class="inline-drawer-toggle inline-drawer-header">
              <b>Summary Preview & Edit</b>
-             <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
+             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
          </div>
          <div class="inline-drawer-content">
-             <div style="display: flex; align-items: center; margin-bottom: 5px;">
+             <div class="flex-container alignitemscenter" style="margin-bottom: 5px;">
                  <button id="histSumm_prevBlock" class="menu_button fa-solid fa-chevron-left" title="Previous Block"></button>
                  <span id="histSumm_blockIndicator" style="margin: 0 10px;">Block 0 / 0</span>
                  <button id="histSumm_nextBlock" class="menu_button fa-solid fa-chevron-right" title="Next Block"></button>
                  <button id="histSumm_refreshPreview" class="menu_button" style="margin-left: auto;">Refresh Preview</button>
              </div>
              <div style="margin-bottom: 5px;">
-                <label>Block Content (Read Only):</label>
-                <textarea id="histSumm_blockContentPreview" rows="8" class="text_pole" readonly style="background-color: #333;"></textarea>
+                <label for="histSumm_blockContentPreview">Block Content (Read Only):</label>
+                <textarea id="histSumm_blockContentPreview" rows="8" class="text_pole" readonly></textarea>
              </div>
              <div>
-                <label>Generated/Cached Summary (Editable):</label>
-                <textarea id="histSumm_summaryPreview" rows="5" class="text_pole"></textarea>
+                <label for="histSumm_summaryPreview">Generated/Cached Summary (Editable):</label>
+                <textarea id="histSumm_summaryPreview" name="summaryPreview" rows="5" class="text_pole"></textarea>
                 <button id="histSumm_saveSummaryEdit" class="menu_button" style="margin-top: 5px;">Save Edited Summary</button>
-                <span id="histSumm_edit_status" style="margin-left: 10px;"></span>
+                <span id="histSumm_edit_status"></span>
              </div>
-              <div id="histSumm_preview_error" class="histSumm_error" style="margin-top: 5px;"></div>
+              <div id="histSumm_preview_error" class="histSumm_error"></div>
          </div>
     </div>
-
 </div>

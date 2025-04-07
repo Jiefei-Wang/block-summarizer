@@ -1,9 +1,9 @@
 {
-    "display_name": "History Summarizer",
+    "display_name": "History Summarizer (Blocks)",
     "author": "Your Name",
-    "version": "1.0.0",
-    "description": "Summarizes chat history into blocks using an external API to save tokens. Modifies prompt context.",
-    "loading_order": 10,
+    "version": "1.0.1",
+    "description": "Summarizes chat history into blocks via external API. Injects summary into prompt.",
+    "loading_order": 11,
     "requires": [],
     "optional": [],
     "js": "index.js",

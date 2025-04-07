@@ -1,452 +1,527 @@
-const { extensions, getRequestHeaders, getApiUrl, loadExtensionSettings, saveExtensionSettings, getContext } = require('../../../script.js');
-const { executeSlashCommands } = require('../../slash-commands'); // Helper for potential commands
-const fs = require('fs').promises;
-const path = require('path');
-const crypto = require('crypto');
-// Use built-in fetch for Node >= 18, otherwise you might need node-fetch
-// const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+// Imports from SillyTavern global scope
+import { extension_settings, getContext, setExtensionPrompt, getApiUrl, loadExtensionSettings, saveExtensionSettings, doExtrasFetch, renderExtensionTemplateAsync } from '../../extensions.js';
+import { debounce, getStringHash } from '../../utils.js'; // Assuming utils are available
+import { eventSource, event_types, saveSettingsDebounced, substituteParamsExtended, extension_prompt_types, extension_prompt_roles, is_send_press, generateQuietPrompt } from '../../../script.js';
 
-const extensionName = "history-summarizer";
-const cacheDir = path.join(__dirname, 'cache');
-let settings = {
-    apiUrl: '',
-    blockSize: 1000, // Characters
-    summarySize: 150, // Target summary size (informational for the API, not enforced here)
-    historySize: 2048, // Target token size for the final history prompt part
-    promptTemplate: `This is a summary of the preceding conversation:\n{{summary_content}}\n\nContinue the conversation based on this summary and the most recent messages below:`,
-    enabled: true,
-};
+// --- IndexedDB Setup ---
+const DB_NAME = 'HistorySummarizerDB';
+const STORE_NAME = 'blockSummaryCache';
+const DB_VERSION = 1;
+let dbPromise = null;
 
-let blockCache = new Map(); // In-memory cache for quick access during a session
+function openDB() {
+    if (dbPromise) return dbPromise;
 
-// --- Helper Functions ---
+    dbPromise = new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-function log(message) {
-    console.log(`[${extensionName}] ${message}`);
+        request.onerror = (event) => {
+            console.error(`[${MODULE_NAME}] IndexedDB error:`, event.target.error);
+            reject(`IndexedDB error: ${event.target.error}`);
+        };
+
+        request.onsuccess = (event) => {
+            log('IndexedDB opened successfully.');
+            resolve(event.target.result);
+        };
+
+        request.onupgradeneeded = (event) => {
+            log('IndexedDB upgrade needed.');
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME, { keyPath: 'hash' });
+                log(`Object store "${STORE_NAME}" created.`);
+            }
+        };
+    });
+    return dbPromise;
 }
 
-async function ensureCacheDir() {
+async function getItemFromDB(hash) {
     try {
-        await fs.access(cacheDir);
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(STORE_NAME, 'readonly');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.get(hash);
+
+            request.onerror = (event) => {
+                console.error(`[${MODULE_NAME}] DB get error:`, event.target.error);
+                reject(event.target.error);
+            };
+
+            request.onsuccess = (event) => {
+                resolve(event.target.result ? event.target.result.summary : null);
+            };
+        });
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            await fs.mkdir(cacheDir);
-            log('Cache directory created.');
-        } else {
-            console.error(`[${extensionName}] Error accessing cache directory:`, error);
-        }
+        console.error(`[${MODULE_NAME}] Failed to get item from DB:`, error);
+        return null; // Return null on error opening DB etc.
     }
 }
 
-function getBlockHash(blockDetails) {
-    // Create hash based on the actual message content and structure
-    const contentString = blockDetails.map(msg => `${msg.is_user ? 'U' : 'C'}:${msg.mes}`).join('|');
-    return crypto.createHash('md5').update(contentString).digest('hex');
+async function setItemInDB(hash, summary) {
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(STORE_NAME, 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.put({ hash: hash, summary: summary });
+
+            request.onerror = (event) => {
+                console.error(`[${MODULE_NAME}] DB put error:`, event.target.error);
+                reject(event.target.error);
+            };
+
+            request.onsuccess = () => {
+                resolve(true);
+            };
+        });
+     } catch (error) {
+        console.error(`[${MODULE_NAME}] Failed to set item in DB:`, error);
+        return false; // Indicate failure
+    }
 }
 
+async function clearDBStore() {
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(STORE_NAME, 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.clear();
+
+            request.onerror = (event) => {
+                console.error(`[${MODULE_NAME}] DB clear error:`, event.target.error);
+                reject(event.target.error);
+            };
+
+            request.onsuccess = () => {
+                log('IndexedDB store cleared.');
+                resolve(true);
+            };
+        });
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Failed to clear DB store:`, error);
+        return false; // Indicate failure
+    }
+}
+// --- End IndexedDB Setup ---
+
+
+// --- Web Crypto Hashing ---
+async function digestMessage(message) {
+  const msgUint8 = new TextEncoder().encode(message); // encode as (utf-8) Uint8Array
+  const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgUint8); // hash the message
+  const hashArray = Array.from(new Uint8Array(hashBuffer)); // convert buffer to byte array
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join(''); // convert bytes to hex string
+  return hashHex;
+}
+
+// Extension specific variables
+const MODULE_NAME = 'history-summarizer'; // Unique name for the extension
+let blockCache = new Map(); // In-memory cache (still useful for session speed)
+let inApiCall = false;
+let lastMessageCount = 0;
+let currentPreviewState = {
+    blockIndex: 0,
+    totalBlocks: 0,
+    currentBlockHash: null,
+    allBlocks: [],
+};
+let lastSummaryContent = '';
+
+// Default settings (same as before)
+const defaultSettings = {
+    enabled: true,
+    apiUrl: '',
+    blockSize: 1000,
+    summarySize: 150,
+    triggerThreshold: 10,
+    promptTemplate: `[This is a summary of earlier conversation blocks:\n{{summary_content}}\nEnd of Summary]`,
+    position: extension_prompt_types.AFTER_SYSTEM,
+    depth: 5,
+    role: extension_prompt_roles.SYSTEM,
+    scan: false,
+};
+
+// --- Helper Functions (Logging) ---
+function log(message) {
+    console.log(`[${MODULE_NAME}] ${message}`);
+}
+
+// --- Cache Handling (Uses new DB functions) ---
 async function getSummaryFromCache(hash) {
     // Check in-memory first
     if (blockCache.has(hash)) {
         return blockCache.get(hash);
     }
-    // Check file cache
-    const cacheFile = path.join(cacheDir, `${hash}.json`);
-    try {
-        await fs.access(cacheFile);
-        const data = await fs.readFile(cacheFile, 'utf-8');
-        const summaryData = JSON.parse(data);
-        blockCache.set(hash, summaryData.summary); // Populate in-memory cache
-        return summaryData.summary;
-    } catch (error) {
-        if (error.code !== 'ENOENT') {
-            console.error(`[${extensionName}] Error reading cache file ${cacheFile}:`, error);
-        }
-        return null; // Not found or error reading
+    // Check IndexedDB
+    const summaryFromDB = await getItemFromDB(hash);
+    if (summaryFromDB !== null) {
+        blockCache.set(hash, summaryFromDB); // Populate in-memory cache
+        return summaryFromDB;
     }
+    return null; // Not found anywhere
 }
 
 async function saveSummaryToCache(hash, summary) {
     blockCache.set(hash, summary); // Update in-memory cache
-    const cacheFile = path.join(cacheDir, `${hash}.json`);
-    try {
-        await fs.writeFile(cacheFile, JSON.stringify({ summary }), 'utf-8');
-    } catch (error) {
-        console.error(`[${extensionName}] Error writing cache file ${cacheFile}:`, error);
-    }
+    await setItemInDB(hash, summary); // Save to IndexedDB
 }
 
+async function clearSummaryCache() {
+    log('Clearing cache...');
+    blockCache.clear(); // Clear in-memory cache
+    const success = await clearDBStore(); // Clear IndexedDB store
+    return success;
+}
+
+// --- Block Hashing (Uses Web Crypto) ---
+async function getBlockHash(blockDetails) {
+    const contentString = blockDetails.map(msg => `${msg.is_user ? 'U' : 'C'}:${msg.mes}`).join('|');
+    return await digestMessage(contentString); // Use Web Crypto SHA-256
+}
+
+
+// --- API Call (Unchanged, uses fetch) ---
 async function callSummarizationApi(blockDetails) {
+    const settings = extension_settings[MODULE_NAME];
     if (!settings.apiUrl) {
         log('Error: Summarization API URL is not set.');
         return null;
     }
-
     const blockContent = blockDetails.map(msg => `${msg.name}: ${msg.mes}`).join('\n');
     const payload = {
-        block_content: blockContent, // Full text for potential context
-        block_details: blockDetails, // Structured data as requested
-        // You might want to add summary_size here if your API supports it
-        // target_summary_size: settings.summarySize
+        block_content: blockContent,
+        block_details: blockDetails,
+        target_summary_size: settings.summarySize
     };
-
     try {
         log(`Sending block to API: ${JSON.stringify(payload).substring(0, 100)}...`);
         const response = await fetch(settings.apiUrl, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                // Add any necessary Authorization headers here if needed
-                // 'Authorization': 'Bearer YOUR_API_KEY'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
-
         if (!response.ok) {
             const errorText = await response.text();
             log(`Error calling summarization API: ${response.status} ${response.statusText} - ${errorText}`);
-            return null;
+            return `[Error: API response ${response.status}]`;
         }
-
         const result = await response.json();
-        log(`Received summary from API: ${result.summary.substring(0, 100)}...`);
-        return result.summary || null; // Expecting { "summary": "..." }
-
+        log(`Received summary from API: ${result.summary ? result.summary.substring(0, 100) : '[No summary]' }...`);
+        return result.summary || null;
     } catch (error) {
-        console.error(`[${extensionName}] Network or fetch error calling summarization API:`, error);
-        return null;
+        console.error(`[${MODULE_NAME}] Network/fetch error calling API:`, error);
+        return `[Error: Network/Fetch failed]`;
     }
 }
 
-// --- Core Logic ---
-
-async function processHistoryForSummarization(chatHistory) {
+// --- Core Summarization Logic (Mostly unchanged, but uses async hash) ---
+async function generateBlocks(chatHistory) {
+    // ... (generateBlocks function remains the same internally, but caller needs await)
+    const settings = extension_settings[MODULE_NAME];
     const blocks = [];
     let currentBlock = [];
     let currentBlockLength = 0;
 
-    log(`Processing ${chatHistory.length} messages for summarization... Block size: ${settings.blockSize} chars.`);
+    log(`Blocking ${chatHistory.length} messages. Block size: ${settings.blockSize} chars.`);
 
     for (const message of chatHistory) {
-        // Simple character count for mes
+        if (message.is_system) continue;
         const messageLength = message.mes ? message.mes.length : 0;
+        if (messageLength === 0) continue;
 
-        // If adding this message exceeds block size (and block isn't empty)
-        // or if the block gets too large anyway (safety)
-        if (currentBlock.length > 0 && (currentBlockLength + messageLength > settings.blockSize || currentBlock.length > 100)) {
-             // Finalize the current block
-             const blockHash = getBlockHash(currentBlock);
-             blocks.push({ hash: blockHash, details: [...currentBlock] }); // Store a copy
-             // Reset for the next block
-             currentBlock = [];
-             currentBlockLength = 0;
-        }
+        const blockMsg = { name: message.name, is_user: message.is_user, mes: message.mes };
 
-        // Add message to current block (if it has content)
-        if (messageLength > 0) {
-             // Use a standardized structure for details
-             currentBlock.push({
-                 name: message.name,
-                 is_user: message.is_user,
-                 mes: message.mes
-             });
+        if (currentBlock.length > 0 && (currentBlockLength + messageLength > settings.blockSize)) {
+             const blockHash = await getBlockHash(currentBlock); // Await hash calculation
+             blocks.push({ hash: blockHash, details: [...currentBlock] });
+             currentBlock = [blockMsg];
+             currentBlockLength = messageLength;
+        } else {
+             currentBlock.push(blockMsg);
              currentBlockLength += messageLength;
         }
     }
 
-    // Add the last remaining block if it has content
     if (currentBlock.length > 0) {
-        const blockHash = getBlockHash(currentBlock);
+        const blockHash = await getBlockHash(currentBlock); // Await hash calculation
         blocks.push({ hash: blockHash, details: currentBlock });
     }
 
     log(`Split history into ${blocks.length} blocks.`);
+    return blocks;
+}
 
-    // Get summaries for all blocks (using cache or API)
+async function summarizeAllBlocks(blocks) {
+    // ... (summarizeAllBlocks function remains the same, but calls async cache/api)
     const blockSummaries = [];
+    let hasError = false;
     for (let i = 0; i < blocks.length; i++) {
         const block = blocks[i];
-        let summary = await getSummaryFromCache(block.hash);
+        let summary = await getSummaryFromCache(block.hash); // Await cache lookup
         if (summary === null) {
-            log(`Cache miss for block ${i + 1}/${blocks.length} (hash: ${block.hash}). Calling API...`);
-            summary = await callSummarizationApi(block.details);
-            if (summary !== null) {
-                await saveSummaryToCache(block.hash, summary);
+            log(`Cache miss for block ${i + 1}/${blocks.length}. Calling API...`);
+            summary = await callSummarizationApi(block.details); // Await API call
+            if (summary !== null && !summary.startsWith('[Error:')) {
+                await saveSummaryToCache(block.hash, summary); // Await cache save
             } else {
-                summary = `[Error summarizing block ${i + 1}]`; // Placeholder on error
+                log(`API call failed or returned null for block ${i+1}`);
+                summary = summary || `[Summary generation failed for block ${i + 1}]`;
+                hasError = true;
             }
         } else {
-             log(`Cache hit for block ${i + 1}/${blocks.length} (hash: ${block.hash})`);
+             log(`Cache hit for block ${i + 1}/${blocks.length}.`);
         }
         blockSummaries.push(summary);
-        // Add a small delay to avoid overwhelming the API if many calls are needed
-        if (summary === null || summary.startsWith('[Error')) await new Promise(resolve => setTimeout(resolve, 200));
     }
-
-    return { blocks, blockSummaries };
+    return { blockSummaries, hasError };
 }
 
-// --- SillyTavern Integration ---
-
-// Function to load settings from file
-async function loadSettings() {
-    try {
-        const loaded = await loadExtensionSettings(extensionName);
-        if (loaded && Object.keys(loaded).length > 0) {
-            // Basic validation/migration could happen here
-            settings = { ...settings, ...loaded };
-            log('Settings loaded.');
-        } else {
-            log('No settings found, using defaults.');
-            // Optionally save defaults on first load
-            await saveExtensionSettings(extensionName, settings);
-        }
-        await ensureCacheDir(); // Ensure cache dir exists after loading settings
-    } catch (error) {
-        console.error(`[${extensionName}] Error loading settings:`, error);
+// --- SillyTavern Integration (Unchanged) ---
+function updatePromptWithSummary(summaryText) {
+    // ... (remains the same)
+    const settings = extension_settings[MODULE_NAME];
+    let finalPrompt = '';
+    if (summaryText && summaryText.trim() !== '') {
+        finalPrompt = settings.promptTemplate.replace('{{summary_content}}', summaryText.trim());
     }
+    setExtensionPrompt(MODULE_NAME, finalPrompt, settings.position, settings.depth, settings.scan, settings.role);
+    log(`Set extension prompt. Position: ${settings.position}, Depth: ${settings.depth}, Role: ${settings.role}, Scan: ${settings.scan}. Content: ${finalPrompt.substring(0,100)}...`);
 }
 
-// Modify the prompt context before sending to LLM
-async function onPromptInput(context) {
-    if (!settings.enabled || !settings.apiUrl) {
-        return context; // Do nothing if disabled or API not set
-    }
+async function checkAndSummarize() {
+    // ... (remains mostly the same, but calls async generateBlocks/summarizeAllBlocks)
+    const settings = extension_settings[MODULE_NAME];
+    if (!settings.enabled || inApiCall) { return; }
+    const context = getContext();
+    const chat = context.chat;
+    const currentMessageCount = chat.filter(m => !m.is_system && m.mes).length;
+    const messagesSinceLastCheck = currentMessageCount - lastMessageCount;
 
-    log('History Summarizer processing prompt...');
-
-    // 1. Get relevant chat history (excluding WIP message)
-    //    Need to adapt based on how ST structures context. Let's assume context.chat
-    //    is the array of message objects. Adjust if it's context.historyString etc.
-    //    We usually want the history *before* the latest user input.
-    const chatHistory = context.chat?.filter(msg => !msg.is_system) || []; // Example: Filter system messages if needed
-
-    if (chatHistory.length === 0) {
-        log('No chat history to summarize.');
-        return context;
-    }
-
-    // 2. Summarize the history
-    const { blocks, blockSummaries } = await processHistoryForSummarization(chatHistory);
-
-    if (blockSummaries.length === 0) {
-        log('No summaries generated.');
-        return context; // Nothing changed
-    }
-
-    // 3. Construct the summary block using the template
-    const combinedSummary = blockSummaries.join('\n\n'); // Combine summaries
-    const summaryPromptPart = settings.promptTemplate.replace('{{summary_content}}', combinedSummary);
-
-    // 4. Calculate *approximate* token counts (using character length as proxy)
-    //    A real tokenizer would be much better here.
-    const templateChars = summaryPromptPart.length;
-    const targetHistoryChars = settings.historySize * 4; // Very rough estimate: 1 token ~ 4 chars
-    const remainingCharsForHistory = Math.max(0, targetHistoryChars - templateChars);
-    log(`Target chars: ${targetHistoryChars}, Template chars: ${templateChars}, Remaining for history: ${remainingCharsForHistory}`);
-
-    // 5. Truncate original history (keep the *most recent* messages)
-    let truncatedHistory = [];
-    let currentChars = 0;
-    // Iterate backwards through the original history
-    for (let i = chatHistory.length - 1; i >= 0; i--) {
-        const message = chatHistory[i];
-        const msgChars = (message.name ? message.name.length + 2 : 0) + (message.mes ? message.mes.length : 0); // name: mes\n
-
-        if (currentChars + msgChars <= remainingCharsForHistory) {
-            truncatedHistory.unshift(message); // Add to the beginning to maintain order
-            currentChars += msgChars;
-        } else {
-            log(`Truncating history before message index ${i}. Kept ${currentChars} chars.`);
-            break; // Stop once we exceed the character budget
-        }
-    }
-
-    // 6. Inject into the context (This is the tricky part and depends heavily on ST version)
-    //    Option A: Replace {{chat_history}} placeholder (if ST uses it this way)
-    //    Option B: Modify the context.chat array directly
-    //    Option C: Add a new system prompt as requested
-
-    // Let's try Option C: Insert after first system prompt, add new system prompt, then the history.
-    // We will construct a new `chat` array for the context.
-
-    let finalChat = [];
-    let firstSystemPromptFound = false;
-    const summarySystemPrompt = {
-        is_system: true,
-        mes: summaryPromptPart,
-        name: "System", // Or maybe leave name null? Check ST behavior
-        is_summary_prompt: true // Custom flag for identification
-    };
-
-    // Add existing system prompts, inject ours after the first non-summary one
-    if (context.chat) {
-        for (const msg of context.chat) {
-            if (msg.is_system && !msg.is_summary_prompt) { // Only consider original system prompts
-                 finalChat.push(msg);
-                 if (!firstSystemPromptFound) {
-                     log('Injecting summary system prompt.');
-                     finalChat.push(summarySystemPrompt);
-                     firstSystemPromptFound = true;
-                 }
-            }
-        }
-    }
-
-
-    // If no system prompt was found, add the summary prompt at the beginning
-    if (!firstSystemPromptFound) {
-         log('No system prompt found, adding summary prompt at the start.');
-         finalChat.unshift(summarySystemPrompt);
-    }
-
-    // Add the truncated history messages
-    finalChat = finalChat.concat(truncatedHistory);
-
-    // Add any non-history messages from original context (like persona, user input - check ST structure)
-    // This part needs careful checking based on the context structure provided by ST.
-    // For simplicity, let's assume context.chat was the main thing to modify.
-    // context.userInput etc. might need to be preserved separately.
-
-    // Replace the chat in the context
-    context.chat = finalChat;
-
-    // Remove the {{chat_history}} placeholder if it exists elsewhere (e.g., in prompt fields)
-    // This might require modifying context.prompt or similar fields.
-    // For now, we assume modifying context.chat achieves the desired effect.
-    // If ST constructs the final prompt string later, we might need to modify that string directly.
-    // Let's log the intended structure:
-    log(`Modified context.chat. Length: ${context.chat.length}`);
-    // context.chat.forEach((msg, i) => log(`[${i}] ${msg.is_system ? 'SYS' : (msg.is_user ? 'USER' : 'AI')} (${msg.name}): ${msg.mes.substring(0, 50)}...`));
-
-
-    log('Prompt modification complete.');
-    return context;
-}
-
-
-// --- Event Handlers & API ---
-
-// Called when extension settings are changed in the UI
-extensions.on('settings-change', (extensionId, newSettings) => {
-    if (extensionId === extensionName) {
-        log('Settings changed via UI.');
-        settings = { ...settings, ...newSettings };
-        saveExtensionSettings(extensionName, settings);
-    }
-});
-
-// Called when ST starts or extensions are reloaded
-extensions.on('state:settings', async () => {
-    await loadSettings();
-});
-
-// Register the input modifier
-// Use 'prompt:input' or the correct event name for prompt modification in your ST version
-// The priority might matter if other extensions modify the prompt. Lower numbers run first.
-extensions.registerInputModifier(onPromptInput, extensionName, 10); // Priority 10
-
-// API route for frontend communication (using simple message passing)
-extensions.on(`${extensionName}:get_settings`, (callback) => {
-    if (typeof callback === 'function') {
-        callback(settings);
-    }
-});
-
-extensions.on(`${extensionName}:get_preview`, async (data, callback) => {
-    if (typeof callback === 'function') {
+    if (messagesSinceLastCheck >= settings.triggerThreshold) {
+        log(`Trigger threshold reached (${messagesSinceLastCheck} >= ${settings.triggerThreshold}). Starting summarization.`);
+        inApiCall = true;
+        $('#histSumm_forceUpdate').prop('disabled', true).text('Summarizing...');
         try {
-             // 1. Get full history (similar to onPromptInput, maybe reuse logic)
-             //    Need access to the current chat context. This might require getting it from ST state.
-             //    Let's assume we can get it via getContext() or similar.
-             const context = getContext(); // Get current context (adapt as needed)
-             const chatHistory = context.chat?.filter(msg => !msg.is_system) || [];
-
-             if (chatHistory.length === 0) {
-                 callback({ error: 'No history to process.' });
-                 return;
-             }
-
-             // 2. Split into blocks
-             const { blocks } = await processHistoryForSummarization(chatHistory);
-
-             if (!blocks || blocks.length === 0) {
-                 callback({ error: 'Could not split history into blocks.' });
-                 return;
-             }
-
-             const blockIndex = data.blockIndex || 0;
-             if (blockIndex < 0 || blockIndex >= blocks.length) {
-                 callback({ error: `Invalid block index ${blockIndex}. Max index is ${blocks.length - 1}.` });
-                 return;
-             }
-
-             // 3. Get content and summary for the requested block
-             const targetBlock = blocks[blockIndex];
-             const blockContent = targetBlock.details.map(msg => `${msg.name}: ${msg.mes}`).join('\n');
-             let summary = await getSummaryFromCache(targetBlock.hash);
-
-             if (summary === null) {
-                 // Optionally trigger summarization just for this block if needed for preview
-                 // summary = await callSummarizationApi(targetBlock.details);
-                 // if (summary) await saveSummaryToCache(targetBlock.hash, summary);
-                 // else summary = "[Summary not generated yet]";
-                 summary = "[Summary not yet cached or generated]";
-             }
-
-             callback({
-                 blockIndex: blockIndex,
-                 totalBlocks: blocks.length,
-                 blockContent: blockContent,
-                 summaryContent: summary,
-                 blockHash: targetBlock.hash // Send hash for potential editing identification
-             });
-
-        } catch (error) {
-             console.error(`[${extensionName}] Error getting preview:`, error);
-             callback({ error: 'Internal server error generating preview.' });
-        }
-    }
-});
-
-extensions.on(`${extensionName}:update_summary`, async (data, callback) => {
-     if (typeof callback === 'function') {
-         const { blockHash, newSummary } = data;
-         if (blockHash && typeof newSummary === 'string') {
-             log(`Updating summary for hash ${blockHash} via UI.`);
-             await saveSummaryToCache(blockHash, newSummary);
-             callback({ success: true });
-         } else {
-             callback({ success: false, error: 'Invalid data for summary update.' });
-         }
-     }
-});
-
-
-extensions.on(`${extensionName}:clear_cache`, async (callback) => {
-    log('Clearing cache...');
-    blockCache.clear(); // Clear in-memory cache
-    try {
-        const files = await fs.readdir(cacheDir);
-        for (const file of files) {
-            if (file.endsWith('.json')) {
-                await fs.unlink(path.join(cacheDir, file));
+            const historyToSummarize = chat.slice(0, -1);
+            const blocks = await generateBlocks(historyToSummarize); // Await
+            if (blocks.length > 0) {
+                const { blockSummaries, hasError } = await summarizeAllBlocks(blocks); // Await
+                const combinedSummary = blockSummaries.join('\n\n').trim();
+                if (combinedSummary) {
+                    lastSummaryContent = combinedSummary;
+                    updatePromptWithSummary(combinedSummary);
+                    if (hasError) { toastr.warning('Some blocks failed to summarize. Check console.', 'Summarization Issue'); }
+                    else { toastr.success(`History summarized into ${blocks.length} blocks.`, 'Summary Updated'); }
+                } else {
+                    log('No summary content generated.');
+                    updatePromptWithSummary('');
+                }
+                lastMessageCount = currentMessageCount;
+            } else {
+                log('No blocks generated from history.');
+                updatePromptWithSummary('');
+                lastMessageCount = currentMessageCount;
             }
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Error during summarization process:`, error);
+            toastr.error('Summarization failed. Check console.', 'Error');
+            updatePromptWithSummary('');
+        } finally {
+            inApiCall = false;
+            $('#histSumm_forceUpdate').prop('disabled', false).text('Summarize Now');
         }
-        log('Cache directory cleared.');
-        if (typeof callback === 'function') callback({ success: true });
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-             log('Cache directory does not exist, nothing to clear.');
-             if (typeof callback === 'function') callback({ success: true }); // It's effectively cleared
-        } else {
-            console.error(`[${extensionName}] Error clearing cache directory:`, error);
-            if (typeof callback === 'function') callback({ success: false, error: 'Failed to clear cache files.' });
+    } else {
+         updatePromptWithSummary(lastSummaryContent);
+    }
+}
+
+async function forceSummarize() {
+    // ... (remains the same, calls async checkAndSummarize)
+    log('Forcing summarization...');
+    lastMessageCount = 0;
+    await checkAndSummarize();
+}
+
+// --- Event Handlers (Unchanged) ---
+function onChatChanged() {
+    // ... (remains the same)
+    log('Chat changed, reapplying last known summary to prompt.');
+    updatePromptWithSummary(lastSummaryContent);
+}
+
+function onMessageRendered() {
+    // ... (remains the same)
+    log('Message rendered, checking summarization trigger.');
+    debounce(checkAndSummarize, 200)();
+}
+
+// --- Initialization and UI Logic (Needs to call async preview/cache functions) ---
+jQuery(async function () {
+    // Load settings HTML
+    const settingsHtml = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
+    $('#extensions_settings').append(settingsHtml);
+    log('Settings HTML loaded.');
+
+    // Initialize settings object
+    extension_settings[MODULE_NAME] = extension_settings[MODULE_NAME] || {};
+    for (const key of Object.keys(defaultSettings)) {
+        if (extension_settings[MODULE_NAME][key] === undefined) {
+            extension_settings[MODULE_NAME][key] = defaultSettings[key];
         }
     }
+    // Ensure IndexedDB is opened (doesn't need explicit ensureCacheDir anymore)
+    await openDB();
+
+    // Function to update UI elements based on settings (Unchanged)
+    function updateUIFromSettings() {
+        // ... (remains the same)
+        const settings = extension_settings[MODULE_NAME];
+        $('#histSumm_enabled').prop('checked', settings.enabled);
+        $('#histSumm_apiUrl').val(settings.apiUrl);
+        $('#histSumm_blockSize').val(settings.blockSize);
+        $('#histSumm_blockSize_value').text(settings.blockSize);
+        $('#histSumm_summarySize').val(settings.summarySize);
+        $('#histSumm_summarySize_value').text(settings.summarySize);
+        $('#histSumm_triggerThreshold').val(settings.triggerThreshold);
+        $('#histSumm_triggerThreshold_value').text(settings.triggerThreshold);
+        $('#histSumm_promptTemplate').val(settings.promptTemplate);
+        $(`input[name="position"][value="${settings.position}"]`).prop('checked', true);
+        $('#histSumm_depth').val(settings.depth);
+        $('#histSumm_role').val(settings.role);
+        $('#histSumm_scan').prop('checked', settings.scan);
+        updatePromptWithSummary(lastSummaryContent);
+    }
+
+    // Function to handle settings change and save (Unchanged)
+    function handleSettingChange() {
+        // ... (remains the same)
+        const settings = extension_settings[MODULE_NAME];
+        settings.enabled = $('#histSumm_enabled').prop('checked');
+        settings.apiUrl = $('#histSumm_apiUrl').val();
+        settings.blockSize = Number($('#histSumm_blockSize').val());
+        settings.summarySize = Number($('#histSumm_summarySize').val());
+        settings.triggerThreshold = Number($('#histSumm_triggerThreshold').val());
+        settings.promptTemplate = $('#histSumm_promptTemplate').val();
+        settings.position = Number($('input[name="position"]:checked').val());
+        settings.depth = Number($('#histSumm_depth').val());
+        settings.role = Number($('#histSumm_role').val());
+        settings.scan = $('#histSumm_scan').prop('checked');
+        $('#histSumm_blockSize_value').text(settings.blockSize);
+        $('#histSumm_summarySize_value').text(settings.summarySize);
+        $('#histSumm_triggerThreshold_value').text(settings.triggerThreshold);
+        saveSettingsDebounced();
+        updatePromptWithSummary(lastSummaryContent);
+        log('Settings updated and saved.');
+    }
+
+    // --- Preview Panel Logic (Needs async calls) ---
+    async function loadPreview(blockIndex) {
+        // ... (needs to call async generateBlocks and cache functions)
+        const context = getContext();
+        const chat = context.chat.slice();
+        if (chat.length === 0) {
+             $('#histSumm_preview_error').text('No chat history available for preview.');
+             return;
+        }
+
+        if (currentPreviewState.allBlocks.length === 0) {
+             currentPreviewState.allBlocks = await generateBlocks(chat); // Await
+             currentPreviewState.totalBlocks = currentPreviewState.allBlocks.length;
+        }
+
+        const blocks = currentPreviewState.allBlocks;
+        const totalBlocks = currentPreviewState.totalBlocks;
+
+        if (totalBlocks === 0) { /* ... error handling ... */ return; }
+
+        currentPreviewState.blockIndex = Math.max(0, Math.min(blockIndex, totalBlocks - 1));
+        const currentIdx = currentPreviewState.blockIndex;
+        const targetBlock = blocks[currentIdx];
+        currentPreviewState.currentBlockHash = targetBlock.hash; // Hash is already calculated in generateBlocks
+
+        // Update UI
+        $('#histSumm_blockIndicator').text(`Block ${currentIdx + 1} / ${totalBlocks}`);
+        $('#histSumm_prevBlock').prop('disabled', currentIdx === 0);
+        $('#histSumm_nextBlock').prop('disabled', currentIdx === totalBlocks - 1);
+        $('#histSumm_preview_error').text('');
+
+        const blockContent = targetBlock.details.map(msg => `${msg.name}: ${msg.mes}`).join('\n');
+        $('#histSumm_blockContentPreview').val(blockContent);
+
+        let summary = await getSummaryFromCache(targetBlock.hash); // Await cache lookup
+        if (summary === null) {
+            summary = "[Summary not cached. Edit and save to create, or run summarization.]";
+        }
+        $('#histSumm_summaryPreview').val(summary);
+        $('#histSumm_edit_status').text('');
+        $('#histSumm_saveSummaryEdit').prop('disabled', false);
+    }
+
+    // Needs to be async now
+    async function refreshPreview() {
+        currentPreviewState.allBlocks = [];
+        await loadPreview(currentPreviewState.blockIndex); // Await
+    }
+
+    // Needs to be async now
+    async function saveEditedSummary() {
+         // ... (needs to call async saveSummaryToCache)
+         const hash = currentPreviewState.currentBlockHash;
+         const newSummary = $('#histSumm_summaryPreview').val();
+         if (!hash) { /* ... error handling ... */ return; }
+         $('#histSumm_edit_status').text('Saving...').css('color', '');
+         await saveSummaryToCache(hash, newSummary); // Await cache save
+         $('#histSumm_edit_status').text('Saved!').css('color', 'lime');
+         setTimeout(() => $('#histSumm_edit_status').text(''), 2000);
+    }
+
+    // --- Attach Event Listeners ---
+    log('Attaching UI listeners...');
+    $('#histSumm_settings').on('change input', 'input, textarea, select', debounce(handleSettingChange, 300));
+    $('#histSumm_forceUpdate').on('click', forceSummarize); // forceSummarize is now async
+    $('#histSumm_clearCache').on('click', async () => { // Make listener async
+        if (confirm("Are you sure you want to clear the block summary cache? This cannot be undone.")) {
+            $('#histSumm_cache_status').text('Clearing...');
+            const success = await clearSummaryCache(); // Await
+            if (success) {
+                $('#histSumm_cache_status').text('Cache Cleared!').css('color', 'lime');
+                await refreshPreview(); // Await preview refresh
+                lastSummaryContent = '';
+                updatePromptWithSummary('');
+            } else {
+                $('#histSumm_cache_status').text('Clear Failed!').css('color', 'red');
+            }
+            setTimeout(() => $('#histSumm_cache_status').text(''), 3000);
+        }
+    });
+
+    // Preview Panel Listeners (need async handlers)
+    $('#histSumm_prevBlock').on('click', async () => await loadPreview(currentPreviewState.blockIndex - 1)); // Await
+    $('#histSumm_nextBlock').on('click', async () => await loadPreview(currentPreviewState.blockIndex + 1)); // Await
+    $('#histSumm_refreshPreview').on('click', refreshPreview); // refreshPreview is now async
+    $('#histSumm_saveSummaryEdit').on('click', saveEditedSummary); // saveEditedSummary is now async
+
+    // Drawer toggles (needs async preview refresh)
+    $('#histSumm_settings').on('click', '.inline-drawer-toggle', async function() { // Make handler async
+        const content = $(this).next('.inline-drawer-content');
+        const icon = $(this).find('.inline-drawer-icon');
+        content.slideToggle(200);
+        icon.toggleClass('down up');
+        if (content.has('#histSumm_blockIndicator').length > 0 && icon.hasClass('down')) {
+             await refreshPreview(); // Await preview refresh
+        }
+    });
+
+    // Set initial UI state
+    updateUIFromSettings();
+
+    // Register core event listeners (Unchanged)
+    eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onMessageRendered);
+
+    log('History Summarizer Extension loaded successfully (using Browser APIs).');
 });
-
-
-// Initial load
-loadSettings();
-
-log('Extension loaded.');

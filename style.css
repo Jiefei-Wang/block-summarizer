@@ -1,5 +1,5 @@
 /* Container for the extension settings */
-.histSummSetContainer {
+#histSumm_settings {
     display: flex;
     flex-direction: column;
     gap: 10px; /* Spacing between drawers */
@@ -8,43 +8,55 @@
 }
 
 /* Add some margin/padding to labels and inputs */
-.histSummSetContainer label {
+#histSumm_settings label {
     display: block;
     margin-top: 8px;
     margin-bottom: 2px;
     font-weight: bold;
 }
 
-.histSummSetContainer input[type="text"],
-.histSummSetContainer input[type="number"],
-.histSummSetContainer textarea {
+#histSumm_settings input[type="text"],
+#histSumm_settings input[type="number"],
+#histSumm_settings textarea {
     width: 95%; /* Adjust as needed */
     margin-bottom: 5px;
-    /* Ensure theme compatibility (copy styles from ST if needed) */
-    /* background-color: var(--input-bg-color); */
-    /* color: var(--text-color); */
-    /* border: 1px solid var(--border-color); */
+    /* Basic theme compatibility */
+    background-color: var(--input-bg-color);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 4px;
 }
 
-.histSummSetContainer input[type="checkbox"] {
+#histSumm_settings input[type="checkbox"] {
      margin-left: 5px;
      vertical-align: middle;
 }
 
 
-.histSummSetContainer button {
-    /* Style buttons like ST menu buttons */
-    /* padding: 5px 10px; */
-    /* background-color: var(--secondary-bg-color); */
-    /* border: 1px solid var(--border-color); */
-    /* cursor: pointer; */
+#histSumm_settings button,
+#histSumm_settings .menu_button /* Apply menu_button style */
+ {
+    padding: 5px 10px;
+    background-color: var(--secondary-bg-color);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    cursor: pointer;
+    border-radius: 3px;
     margin-right: 5px; /* Spacing between adjacent buttons */
 }
-/* Use ST's menu_button class if available and suitable */
-/* .histSummSetContainer .menu_button { ... } */
+#histSumm_settings button:hover,
+#histSumm_settings .menu_button:hover {
+    background-color: var(--tertiary-bg-color);
+}
+#histSumm_settings button:disabled,
+#histSumm_settings .menu_button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
 
 
-.histSummSetContainer small {
+#histSumm_settings small {
     display: block;
     font-size: 0.8em;
     color: var(--text-color-secondary); /* Lighter text color */
@@ -56,6 +68,8 @@
 .histSumm_error {
     color: var(--warning-color, red); /* Use theme warning color or fallback */
     font-weight: bold;
+    font-size: 0.9em;
+    margin-top: 5px;
 }
 
 /* Style for status messages */
@@ -63,18 +77,19 @@
 #histSumm_edit_status {
     font-size: 0.9em;
     color: var(--text-color-secondary);
+    margin-left: 10px;
 }
 
 
-/* Drawer styles (basic example, adapt from ST's common.css if possible) */
-.inline-drawer {
+/* Drawer styles (copying pattern from Summarize example) */
+#histSumm_settings .inline-drawer {
     border: 1px solid var(--border-color, #444);
     border-radius: 5px;
     background-color: var(--secondary-bg-color, #2a2a2a);
     margin-bottom: 10px;
 }
 
-.inline-drawer-header {
+#histSumm_settings .inline-drawer-header {
     padding: 8px 10px;
     cursor: pointer;
     display: flex;
@@ -86,29 +101,35 @@
     border-top-right-radius: 5px;
 }
 
-.inline-drawer-icon {
+#histSumm_settings .inline-drawer-icon {
     transition: transform 0.2s ease-in-out;
 }
 
-.inline-drawer-icon.down {
+#histSumm_settings .inline-drawer-icon.down {
     transform: rotate(0deg);
 }
 
-.inline-drawer-icon.up {
+#histSumm_settings .inline-drawer-icon.up {
     transform: rotate(-90deg); /* Or 180deg depending on icon */
 }
 
-.inline-drawer-content {
+#histSumm_settings .inline-drawer-content {
     padding: 10px;
     /* display: none; */ /* Initial state controlled by JS or default CSS */
     border-top: none;
 }
 
+#histSumm_blockContentPreview {
+     background-color: var(--primary-bg-color); /* Darker bg for readonly */
+}
+
 /* Ensure FontAwesome icons render if used */
 .fa-solid {
     /* display: inline-block; */ /* Handled by FontAwesome CSS */
-    /* font-style: normal; */
-    /* font-variant: normal; */
-    /* text-rendering: auto; */
-    /* -webkit-font-smoothing: antialiased; */
 }
+
+/* Util classes potentially used */
+.flex-container { display: flex; }
+.alignitemscenter { align-items: center; }
+.justifyspacebetween { justify-content: space-between; }
+.margin0 { margin: 0 !important; }
